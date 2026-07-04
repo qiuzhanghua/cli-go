@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - '*'
+      - 'v*'
 
 permissions:
   contents: read
@@ -17,14 +17,12 @@ jobs:
     name: Extract go module metadata
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v7.0.0
-      with:
-        persist-credentials: false
     - name: Extract module information
       id: go_metadata
       run: |
-        echo "name=$(go list -m)" >> $GITHUB_OUTPUT
-        echo "version=$(go list -m -f '{{.Version}}')" >> $GITHUB_OUTPUT
+        REPO_NAME="${GITHUB_REPOSITORY##*/}"
+        echo "name=${REPO_NAME%-go}" >> $GITHUB_OUTPUT
+        echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
     outputs:
       name: ${{ steps.go_metadata.outputs.name }}
       version: ${{ steps.go_metadata.outputs.version }}
@@ -34,7 +32,6 @@ jobs:
     runs-on: ${{ matrix.job.os }}
     needs: go_metadata
     permissions:
-      id-token: write
       contents: write
       attestations: write
     strategy:
@@ -44,8 +41,8 @@ jobs:
           - { target: aarch64-unknown-linux-gnu   , os: ubuntu-latest }
           - { target: aarch64-unknown-linux-musl  , os: ubuntu-latest }
           - { target: arm-unknown-linux-gnueabihf , os: ubuntu-latest }
-          - { target: arm64-apple-darwin          , os: macos-26 }
-          - { target: x86_64-apple-darwin         , os: macos-26-intel }
+          - { target: arm64-apple-darwin          , os: macos-15 }
+          - { target: x86_64-apple-darwin         , os: macos-13 }
           - { target: x86_64-pc-windows-gnu       , os: windows-2025 }
           - { target: x86_64-pc-windows-msvc       , os: windows-2025 }
           - { target: aarch64-pc-windows-msvc      , os: windows-11-arm }
@@ -82,10 +79,6 @@ jobs:
         go version
         go env GOOS GOARCH
 
-    - name: Build
-      shell: bash
-      run: go build -ldflags="-s -w" -o "$BIN_PATH" ./src
-
     - name: Set binary name & path
       id: bin
       shell: bash
@@ -100,6 +93,12 @@ jobs:
 
         echo "BIN_PATH=${BIN_PATH}" >> $GITHUB_OUTPUT
         echo "BIN_NAME=${BIN_NAME}" >> $GITHUB_OUTPUT
+
+    - name: Build
+      shell: bash
+      env:
+        BIN_PATH: ${{ steps.bin.outputs.BIN_PATH }}
+      run: go build -ldflags="-s -w" -o "$BIN_PATH" ./src
 
     - name: Create package
       id: package
