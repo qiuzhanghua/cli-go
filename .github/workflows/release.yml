@@ -84,7 +84,7 @@ jobs:
 
     - name: Build
       shell: bash
-      run: go build -ldflags="-s -w" -release
+      run: go build -ldflags="-s -w" -o "$BIN_PATH"
 
     - name: Set binary name & path
       id: bin
