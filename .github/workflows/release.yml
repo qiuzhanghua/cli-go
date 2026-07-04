@@ -96,7 +96,7 @@ jobs:
         esac;
 
         BIN_NAME="${name}${EXE_suffix}"
-        BIN_PATH="./$BIN_NAME"
+        BIN_PATH="$BIN_NAME"
 
         echo "BIN_PATH=${BIN_PATH}" >> $GITHUB_OUTPUT
         echo "BIN_NAME=${BIN_NAME}" >> $GITHUB_OUTPUT
