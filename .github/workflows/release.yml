@@ -1,0 +1,162 @@
+name: Release
+
+env:
+  CICD_INTERMEDIATES_DIR: "_cicd-intermediates"
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: read
+
+jobs:
+  go_metadata:
+    name: Extract go module metadata
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7.0.0
+      with:
+        persist-credentials: false
+    - name: Extract module information
+      id: go_metadata
+      run: |
+        echo "name=$(go list -m)" >> $GITHUB_OUTPUT
+        echo "version=$(go list -m -f '{{.Version}}')" >> $GITHUB_OUTPUT
+    outputs:
+      name: ${{ steps.go_metadata.outputs.name }}
+      version: ${{ steps.go_metadata.outputs.version }}
+
+  build:
+    name: '${{ matrix.job.target }} (${{ matrix.job.os }})'
+    runs-on: ${{ matrix.job.os }}
+    needs: go_metadata
+    permissions:
+      id-token: write
+      contents: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { target: aarch64-unknown-linux-gnu   , os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl  , os: ubuntu-latest }
+          - { target: arm-unknown-linux-gnueabihf , os: ubuntu-latest }
+          - { target: arm64-apple-darwin          , os: macos-26 }
+          - { target: x86_64-apple-darwin         , os: macos-26-intel }
+          - { target: x86_64-pc-windows-gnu       , os: windows-2025 }
+          - { target: x86_64-pc-windows-msvc       , os: windows-2025 }
+          - { target: aarch64-pc-windows-msvc      , os: windows-11-arm }
+          - { target: x86_64-unknown-linux-gnu     , os: ubuntu-latest }
+          - { target: x86_64-unknown-linux-musl    , os: ubuntu-latest }
+    env:
+      target: ${{ matrix.job.target }}
+      name: ${{ needs.go_metadata.outputs.name }}
+      version: ${{ needs.go_metadata.outputs.version }}
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v7.0.0
+      with:
+        persist-credentials: false
+
+    - name: Install prerequisites
+      if: contains(matrix.job.target, 'linux-gnu') || contains(matrix.job.target, 'linux-musl')
+      shell: bash
+      run: |
+        case ${target} in
+          arm-unknown-linux-gnueabihf) sudo apt-get -y update ; sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
+          aarch64-unknown-linux-gnu) sudo apt-get -y update ; sudo apt-get -y install gcc-aarch64-linux-gnu ;;
+        esac
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+        target: ${{ matrix.job.target }}
+
+    - name: Show version information
+      shell: bash
+      run: |
+        go version
+        go env GOOS GOARCH
+
+    - name: Build
+      shell: bash
+      run: go build -ldflags="-s -w" -release
+
+    - name: Set binary name & path
+      id: bin
+      shell: bash
+      run: |
+        EXE_suffix=""
+        case ${target} in
+          *-windows*) EXE_suffix=".exe" ;;
+        esac;
+
+        BIN_NAME="${name}${EXE_suffix}"
+        BIN_PATH="./$BIN_NAME"
+
+        echo "BIN_PATH=${BIN_PATH}" >> $GITHUB_OUTPUT
+        echo "BIN_NAME=${BIN_NAME}" >> $GITHUB_OUTPUT
+
+    - name: Create package
+      id: package
+      shell: bash
+      env:
+        BIN_PATH: ${{ steps.bin.outputs.BIN_PATH }}
+      run: |
+        PKG_suffix=".tar.gz"
+        case ${target} in
+        *-windows*) PKG_suffix=".zip" ;;
+        esac
+        PKG_BASENAME=${name}-v${version}-${target}
+        PKG_NAME=${PKG_BASENAME}${PKG_suffix}
+        echo "PKG_NAME=${PKG_NAME}" >> $GITHUB_OUTPUT
+
+        PKG_STAGING="${CICD_INTERMEDIATES_DIR}/package"
+        ARCHIVE_DIR="${PKG_STAGING}/${PKG_BASENAME}/"
+        mkdir -p "${ARCHIVE_DIR}"
+
+        cp "${BIN_PATH}" "$ARCHIVE_DIR"
+
+        pushd "${PKG_STAGING}/" >/dev/null
+        case ${target} in
+          *-windows*) 7z -y a "${PKG_NAME}" "${PKG_BASENAME}"/* | tail -2 ;;
+          *) tar czf "${PKG_NAME}" "${PKG_BASENAME}"/* ;;
+        esac;
+        popd >/dev/null
+
+        echo "PKG_PATH=${PKG_STAGING}/${PKG_NAME}" >> $GITHUB_OUTPUT
+
+    - name: "Artifact upload: package"
+      id: upload-package
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: ${{ steps.package.outputs.PKG_NAME }}
+        path: ${{ steps.package.outputs.PKG_PATH }}
+        compression-level: 0
+
+    - name: Check for release
+      id: is-release
+      shell: bash
+      run: |
+        unset IS_RELEASE ; if [[ $GITHUB_REF =~ ^refs/tags/v[0-9].* ]]; then IS_RELEASE='true' ; fi
+        echo "IS_RELEASE=${IS_RELEASE}" >> $GITHUB_OUTPUT
+
+    - name: Attest artifacts
+      uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4
+      if: steps.is-release.outputs.IS_RELEASE
+      with:
+        subject-path: |
+          ${{ steps.package.outputs.PKG_PATH }}
+
+    - name: Publish archives and packages
+      uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+      if: steps.is-release.outputs.IS_RELEASE
+      with:
+        files: |
+          ${{ steps.package.outputs.PKG_PATH }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
